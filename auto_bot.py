@@ -88,29 +88,51 @@ class VantageBrowserBot:
             """
         })
 
-        # Navigate to Vantage WebTrader
-        trade_url = f"https://secure.vantagemarkets.com/web_trade/trade/{self.symbol}"
-        print(f"[Bot] Loading WebTrader: {trade_url}")
-        self.driver.get(trade_url)
+        # Navigate to Vantage domain first to set context
+        print("[Bot] Injecting authenticated session & tokens into Chrome...")
+        self.driver.get("https://secure.vantagemarkets.com/robots.txt")
+        time.sleep(1)
 
-        # Inject cookies if needed
+        # 1. Inject Cookies
         cookies_str = self.config.get("cookies", "")
-        if cookies_str and "token=" in cookies_str:
-            try:
-                for item in cookies_str.split(";"):
-                    if "=" in item:
+        if cookies_str:
+            for item in cookies_str.split(";"):
+                if "=" in item:
+                    try:
                         k, v = item.strip().split("=", 1)
                         self.driver.add_cookie({
                             "name": k.strip(),
                             "value": v.strip(),
-                            "domain": ".vantagemarkets.com"
+                            "domain": "secure.vantagemarkets.com",
+                            "path": "/"
                         })
-                self.driver.refresh()
-            except Exception:
-                pass
+                    except Exception:
+                        pass
 
-        print(f"{COLOR_GREEN}[✓] Browser opened successfully!{COLOR_RESET}")
-        print(f"{COLOR_YELLOW}[Notice] Agar aap logged in nahi hain, toh ek baar browser me login karein. Profile save ho jayegi!{COLOR_RESET}\n")
+        # 2. Inject LocalStorage Auth Tokens (Vue/React state)
+        token = self.config.get("auth_token", "")
+        trade_token = self.config.get("trade_token", "ac541a7a56134600ae34ada0da749e31")
+        user_id = str(self.config.get("user_id", "12179632"))
+        account_id = str(self.config.get("account_id", "26220746"))
+
+        inject_js = f"""
+            localStorage.setItem('token', '{token}');
+            localStorage.setItem('xtoken', '{token}');
+            localStorage.setItem('tradeToken', JSON.stringify({{'value': '{trade_token}', 'options': {{'seconds': -1, 'keepExpired': false}}, 'expiredAt': -1}}));
+            localStorage.setItem('current_account', JSON.stringify({{'value': JSON.stringify({{{user_id}: {{'accountId': '{account_id}', 'region': 'nv'}}}}), 'options': {{'seconds': -1, 'keepExpired': false}}, 'expiredAt': -1}}));
+            localStorage.setItem('cpUserInfo', JSON.stringify({{'value': {{'crmUserId': '{user_id}', 'userToken': '{token}'}}, 'options': {{'seconds': -1, 'keepExpired': false}}, 'expiredAt': -1}}));
+            localStorage.setItem('user', JSON.stringify({{'accessToken': '{token}', 'userId': {user_id}, 'userID': {user_id}, 'email': 'tejasbachute3@gmail.com', 'isDemo': false}}));
+            localStorage.setItem('account_list_domain', 'appv2.nv.polokalamumakeke.com:18008');
+        """
+        self.driver.execute_script(inject_js)
+        print(f"{COLOR_GREEN}[✓] Injected Tokens & LocalStorage successfully!{COLOR_RESET}")
+
+        # Now navigate to WebTrader with fully authenticated session
+        trade_url = f"https://secure.vantagemarkets.com/web_trade/trade/{self.symbol}"
+        print(f"[Bot] Loading WebTrader (Directly Logged In): {trade_url}")
+        self.driver.get(trade_url)
+        time.sleep(3)
+        print(f"{COLOR_GREEN}[✓] DIRECT LOGIN COMPLETE! WebTrader is active.{COLOR_RESET}\n")
 
     def get_account_equity(self):
         """Extracts live equity from the page DOM"""
