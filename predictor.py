@@ -30,7 +30,7 @@ import sys
 import argparse
 import collections
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -111,7 +111,7 @@ class TechnicalIndicators:
     @staticmethod
     def get_market_session(dt_utc=None):
         if not dt_utc:
-            dt_utc = datetime.utcnow()
+            dt_utc = datetime.now(timezone.utc)
         hour = dt_utc.hour
         if 12 <= hour < 16:
             return "GOLDEN_OVERLAP", 15, "London+NY Golden Overlap (Peak Volume)"
