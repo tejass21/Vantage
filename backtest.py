@@ -70,6 +70,34 @@ class TechnicalIndicators:
         pct_b = (current - lower) / width if width > 0 else 0.5
         return sma, upper, lower, pct_b
 
+    @staticmethod
+    def calc_atr(candles, period=14):
+        if len(candles) < 2:
+            return 0.01
+        trs = []
+        for i in range(1, len(candles)):
+            c = candles[i]
+            prev_c = candles[i-1]
+            tr = max(c['high'] - c['low'], abs(c['high'] - prev_c['close']), abs(c['low'] - prev_c['close']))
+            trs.append(tr)
+        if len(trs) < period:
+            return float(np.mean(trs)) if trs else 0.01
+        return float(np.mean(trs[-period:]))
+
+    @staticmethod
+    def get_market_session(dt_utc=None):
+        if not dt_utc:
+            dt_utc = datetime.utcnow()
+        hour = dt_utc.hour
+        if 12 <= hour < 16:
+            return "GOLDEN_OVERLAP", 15, "London+NY Golden Overlap (Peak Volume)"
+        elif 7 <= hour < 16:
+            return "LONDON_SESSION", 10, "London Active Session"
+        elif 12 <= hour < 21:
+            return "NY_SESSION", 10, "New York Active Session"
+        else:
+            return "ASIAN_RANGE", -10, "Asian Low-Liquidity Range"
+
 def fetch_vantage_candles(symbol="USDJPY", size=999):
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path, "r", encoding="utf-8") as f:
@@ -114,32 +142,37 @@ def evaluate_candle(window_candles, current_candle, mode="sniper"):
     current_price = current_candle["close"]
     closes = [c["close"] for c in window_candles] + [current_price]
 
+    atr = TechnicalIndicators.calc_atr(window_candles, 14)
     ema9 = TechnicalIndicators.calc_ema(closes, 9)
     ema21 = TechnicalIndicators.calc_ema(closes, 21)
     ema50 = TechnicalIndicators.calc_ema(closes, 50)
     rsi = TechnicalIndicators.calc_rsi(closes, 14)
     sma, bb_upper, bb_lower, pct_b = TechnicalIndicators.calc_bollinger(closes, 20, 2.0)
 
-    # S/R
+    # S/R based on dynamic ATR
     recent_highs = [c['high'] for c in window_candles[-20:]]
     recent_lows = [c['low'] for c in window_candles[-20:]]
     resistance = max(recent_highs)
     support = min(recent_lows)
-    tol = 0.0006 * current_price
+    tol = max(0.6 * atr, 0.0003 * current_price)
     at_support = abs(current_price - support) <= tol
     at_resistance = abs(current_price - resistance) <= tol
 
-    # Pinbar wick
+    # Pinbar wick based on ATR
     body = abs(current_candle['close'] - current_candle['open'])
     c_range = current_candle['high'] - current_candle['low']
     rejection = "NONE"
     if c_range > 0:
         upper_wick = current_candle['high'] - max(current_candle['open'], current_candle['close'])
         lower_wick = min(current_candle['open'], current_candle['close']) - current_candle['low']
-        if lower_wick >= 1.8 * body and upper_wick <= 0.3 * body:
+        if lower_wick >= 1.5 * body and lower_wick >= 0.4 * atr and upper_wick <= 0.35 * body:
             rejection = "BULLISH_REJECTION"
-        elif upper_wick >= 1.8 * body and lower_wick <= 0.3 * body:
+        elif upper_wick >= 1.5 * body and upper_wick >= 0.4 * atr and lower_wick <= 0.35 * body:
             rejection = "BEARISH_REJECTION"
+
+    # Market Session
+    dt = datetime.utcfromtimestamp(current_candle.get("timestamp", time.time()))
+    session_name, session_score, _ = TechnicalIndicators.get_market_session(dt)
 
     bull_score = 0
     bear_score = 0
@@ -148,6 +181,15 @@ def evaluate_candle(window_candles, current_candle, mode="sniper"):
         bull_score += 25
     elif ema9 < ema21 and current_price <= ema21:
         bear_score += 25
+
+    if current_price > ema50:
+        bull_score += 10
+    elif current_price < ema50:
+        bear_score += 10
+
+    if session_score > 0:
+        bull_score += session_score // 2
+        bear_score += session_score // 2
 
     if at_support:
         bull_score += 20
