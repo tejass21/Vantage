@@ -94,9 +94,37 @@ class TechnicalIndicators:
         pct_b = (current - lower) / width if width > 0 else 0.5
         return sma, upper, lower, pct_b
 
+    @staticmethod
+    def calc_atr(candles, period=14):
+        if len(candles) < 2:
+            return 0.01
+        trs = []
+        for i in range(1, len(candles)):
+            c = candles[i]
+            prev_c = candles[i-1]
+            tr = max(c['high'] - c['low'], abs(c['high'] - prev_c['close']), abs(c['low'] - prev_c['close']))
+            trs.append(tr)
+        if len(trs) < period:
+            return float(np.mean(trs)) if trs else 0.01
+        return float(np.mean(trs[-period:]))
+
+    @staticmethod
+    def get_market_session(dt_utc=None):
+        if not dt_utc:
+            dt_utc = datetime.utcnow()
+        hour = dt_utc.hour
+        if 12 <= hour < 16:
+            return "GOLDEN_OVERLAP", 15, "London+NY Golden Overlap (Peak Volume)"
+        elif 7 <= hour < 16:
+            return "LONDON_SESSION", 10, "London Active Session"
+        elif 12 <= hour < 21:
+            return "NY_SESSION", 10, "New York Active Session"
+        else:
+            return "ASIAN_RANGE", -10, "Asian Low-Liquidity Range"
+
 class PriceActionAnalysis:
     @staticmethod
-    def detect_candlestick_pattern(candle):
+    def detect_candlestick_pattern(candle, atr=0.01):
         body = abs(candle['close'] - candle['open'])
         candle_range = candle['high'] - candle['low']
         if candle_range <= 0:
@@ -104,21 +132,22 @@ class PriceActionAnalysis:
         upper_wick = candle['high'] - max(candle['open'], candle['close'])
         lower_wick = min(candle['open'], candle['close']) - candle['low']
 
-        if lower_wick >= 1.8 * body and upper_wick <= 0.3 * body:
+        if lower_wick >= 1.5 * body and lower_wick >= 0.4 * atr and upper_wick <= 0.35 * body:
             return "BULLISH_PINBAR", "BULLISH_REJECTION"
-        if upper_wick >= 1.8 * body and lower_wick <= 0.3 * body:
+        if upper_wick >= 1.5 * body and upper_wick >= 0.4 * atr and lower_wick <= 0.35 * body:
             return "BEARISH_PINBAR", "BEARISH_REJECTION"
         return "STANDARD", "MOMENTUM"
 
     @staticmethod
-    def find_key_levels(candles, current_price):
+    def find_key_levels(candles, current_price, atr=0.01):
         if len(candles) < 5:
             return False, False, 0.0, 0.0
         recent_highs = [c['high'] for c in candles[-20:]]
         recent_lows = [c['low'] for c in candles[-20:]]
         resistance = max(recent_highs)
         support = min(recent_lows)
-        tolerance = 0.0006 * current_price
+        # ATR-based dynamic tolerance scales to Gold, Nasdaq & Forex
+        tolerance = max(0.6 * atr, 0.0003 * current_price)
         at_support = abs(current_price - support) <= tolerance
         at_resistance = abs(current_price - resistance) <= tolerance
         return at_support, at_resistance, support, resistance
@@ -210,13 +239,17 @@ class VantageLiveSniper:
         closes = [c["close"] for c in klines]
 
         # Indicators
+        atr = TechnicalIndicators.calc_atr(klines, 14)
         ema9 = TechnicalIndicators.calc_ema(closes, 9)
         ema21 = TechnicalIndicators.calc_ema(closes, 21)
         ema50 = TechnicalIndicators.calc_ema(closes, 50)
         rsi = TechnicalIndicators.calc_rsi(closes, 14)
         sma, bb_upper, bb_lower, pct_b = TechnicalIndicators.calc_bollinger(closes, 20, 2.0)
-        at_support, at_res, sup, res = PriceActionAnalysis.find_key_levels(klines, current_price)
-        pattern, rejection = PriceActionAnalysis.detect_candlestick_pattern(current_candle)
+        at_support, at_res, sup, res = PriceActionAnalysis.find_key_levels(klines, current_price, atr)
+        pattern, rejection = PriceActionAnalysis.detect_candlestick_pattern(current_candle, atr)
+
+        # Market Session Liquidity Filter
+        session_name, session_score, session_label = TechnicalIndicators.get_market_session()
 
         bull_score = 0
         bear_score = 0
@@ -230,13 +263,25 @@ class VantageLiveSniper:
             bear_score += 25
             reasons.append("EMA Bear Trend (9<21)")
 
+        # Macro Trend Alignment (EMA 50)
+        if current_price > ema50:
+            bull_score += 10
+        elif current_price < ema50:
+            bear_score += 10
+
+        # Session Liquidity Boost
+        if session_score > 0:
+            bull_score += session_score // 2
+            bear_score += session_score // 2
+            reasons.append(session_name)
+
         # 2. Key S/R
         if at_support:
             bull_score += 20
-            reasons.append("Key Support Bounce")
+            reasons.append(f"Key Support Bounce (ATR: {atr:.2f})")
         elif at_res:
             bear_score += 20
-            reasons.append("Key Resistance Rejection")
+            reasons.append(f"Key Resistance Rejection (ATR: {atr:.2f})")
 
         # 3. RSI
         if rsi <= 35:
@@ -303,6 +348,8 @@ class VantageLiveSniper:
             "ema9": ema9,
             "ema21": ema21,
             "pct_b": pct_b,
+            "atr": atr,
+            "session": session_name,
             "timestamp": current_candle["timestamp"]
         }
 
@@ -342,7 +389,7 @@ def start_predictor(mode="sniper", symbol=None):
                         print(f"\r{BOLD}{col}[SNIPER ALERT {now.strftime('%H:%M:%S')}] >>> {sig} <<< ({conf}%) | Price: {price:.3f} | RSI: {rsi_val:.1f} | Window: {time_rem}s | {', '.join(res['reasons'][:2])}{COLOR_RESET}")
                     else:
                         # Live tick heartbeat
-                        sys.stdout.write(f"\r{DIM}[{now.strftime('%H:%M:%S')}]{COLOR_RESET} Price: {BOLD}{price:.3f}{COLOR_RESET} | RSI: {rsi_val:.1f} | Candle Rem: {time_rem:02d}s | Ticks Saved: {COLOR_GREEN}{engine.ticks_collected}{COLOR_RESET} | State: {COLOR_YELLOW}{sig}{COLOR_RESET}   ")
+                        sys.stdout.write(f"\r{DIM}[{now.strftime('%H:%M:%S')}]{COLOR_RESET} Price: {BOLD}{price:.3f}{COLOR_RESET} | RSI: {rsi_val:.1f} | ATR: {res['atr']:.2f} | [{COLOR_CYAN}{res['session']}{COLOR_RESET}] | Rem: {time_rem:02d}s | State: {COLOR_YELLOW}{sig}{COLOR_RESET}   ")
                         sys.stdout.flush()
 
             time.sleep(0.5)
