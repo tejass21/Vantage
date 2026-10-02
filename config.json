@@ -15,6 +15,12 @@
   "time_zone": "5",
   "source": 3012,
   "target_asset": "USDJPY",
+  "target_assets": [
+    "USDJPY",
+    "XAUUSD",
+    "EURUSD",
+    "NAS100"
+  ],
   "candle_duration": 60,
   "pre_candle_seconds": 5,
   "strategy_mode": "sniper",

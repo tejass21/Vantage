@@ -42,7 +42,7 @@ jobs:
 
       - name: Final Commit and Push
         run: |
-          git add Data/USDJPY_ticks.csv
+          git add Data/*.csv
           if git diff --staged --quiet; then
             echo "No new ticks to commit."
           else

@@ -124,14 +124,14 @@ class PriceActionAnalysis:
         return at_support, at_resistance, support, resistance
 
 class VantageLiveSniper:
-    def __init__(self, config_path=None, mode="sniper"):
+    def __init__(self, config_path=None, mode="sniper", symbol=None):
         if not config_path:
             config_path = os.path.join(os.path.dirname(__file__), "config.json")
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
         self.mode = mode
-        self.target = self.config.get("target_asset", "USDJPY")
+        self.target = symbol.upper() if symbol else self.config.get("target_asset", "USDJPY")
         self.kline_url = self.config.get("kline_url", "https://appv2.nv.polokalamumakeke.com:18008/api/kline/query")
         self.account = self.config.get("account_id", "26220746")
         self.source = self.config.get("source", 3012)
@@ -306,8 +306,8 @@ class VantageLiveSniper:
             "timestamp": current_candle["timestamp"]
         }
 
-def start_predictor(mode="sniper"):
-    engine = VantageLiveSniper(mode=mode)
+def start_predictor(mode="sniper", symbol=None):
+    engine = VantageLiveSniper(mode=mode, symbol=symbol)
     
     print(f"\n{BOLD}{COLOR_CYAN}================================================================={COLOR_RESET}")
     print(f"{BOLD}{COLOR_CYAN}   VANTAGE INSTITUTIONAL QUANTITATIVE SNIPER ENGINE (v8.0 PRO)   {COLOR_RESET}")
@@ -355,8 +355,9 @@ def start_predictor(mode="sniper"):
 def main():
     parser = argparse.ArgumentParser(description="Vantage Quantitative Sniper Engine")
     parser.add_argument("--mode", type=str, default="sniper", choices=["sniper", "inverse", "adaptive"], help="Strategy mode")
+    parser.add_argument("--symbol", type=str, default=None, help="Target asset: USDJPY, XAUUSD, EURUSD, NAS100")
     args = parser.parse_args()
-    start_predictor(mode=args.mode)
+    start_predictor(mode=args.mode, symbol=args.symbol)
 
 if __name__ == "__main__":
     main()
