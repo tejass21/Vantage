@@ -2,7 +2,7 @@ name: 24x7 Vantage Tick Collector
 
 on:
   schedule:
-    # Runs every 4 hours automatically
+    # Runs automatically every 4 hours
     - cron: '0 */4 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub web UI anytime
 
@@ -18,7 +18,8 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,19 +31,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Tick Collector (3.8 Hours Session)
-        run: |
-          python collector.py --duration-hours 3.8
-
-      - name: Commit and Push New Ticks
+      - name: Configure Git Bot
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Tick Collector (3.8 Hours with 10-Min Incremental Sync)
+        run: |
+          python collector.py --duration-hours 3.8
+
+      - name: Final Commit and Push
+        run: |
           git add Data/USDJPY_ticks.csv
           if git diff --staged --quiet; then
             echo "No new ticks to commit."
           else
-            git commit -m "Auto-collected Vantage ticks update [skip ci]"
+            git commit -m "Auto-collected Vantage ticks session update [skip ci]"
             git pull --rebase origin main || true
             git push origin main
           fi

@@ -4,6 +4,7 @@
 ================================================================================
 Continuously fetches real-time market data from Vantage's live institutional
 stream API and saves ticks into Vantage/Data/USDJPY_ticks.csv.
+Supports 24x7 headless collection and incremental GitHub Actions sync.
 ================================================================================
 """
 
@@ -12,6 +13,7 @@ import json
 import os
 import sys
 import argparse
+import subprocess
 from datetime import datetime
 import requests
 
@@ -55,6 +57,18 @@ class VantageDataCollector:
             with open(self.output_file, "w", encoding="utf-8") as f:
                 f.write("timestamp_ms,price,datetime,volume\n")
 
+        # Load existing timestamps to avoid duplicate entries
+        self.seen_timestamps = set()
+        if os.path.exists(self.output_file):
+            try:
+                with open(self.output_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(",")
+                        if parts and parts[0].isdigit():
+                            self.seen_timestamps.add(int(parts[0]))
+            except Exception:
+                pass
+
         self.session = requests.Session()
         self.last_ts = 0
         self.last_price = 0
@@ -62,10 +76,14 @@ class VantageDataCollector:
         self.buffer = []
 
     def log_tick(self, price, ts_ms, vol=0):
+        if ts_ms in self.seen_timestamps:
+            return False
+        self.seen_timestamps.add(ts_ms)
         dt_str = datetime.fromtimestamp(ts_ms / 1000.0).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         self.buffer.append(f"{ts_ms},{price},{dt_str},{vol}\n")
         self.tick_count += 1
         self.flush()
+        return True
 
     def flush(self):
         if not self.buffer:
@@ -89,26 +107,45 @@ class VantageDataCollector:
                 data = res.json()
                 if data.get("code") == 0 and "data" in data and "klines" in data["data"]:
                     return data["data"]["klines"]
-        except Exception as e:
+        except Exception:
             pass
         return None
 
-def run_collector(duration_seconds=14400, poll_interval=1.0):
+    def git_sync(self):
+        """Pushes current data to GitHub during long-running actions"""
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            try:
+                subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=False)
+                subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.com"], check=False)
+                subprocess.run(["git", "add", self.output_file], check=False)
+                res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+                if res.stdout.strip():
+                    subprocess.run(["git", "commit", "-m", f"Auto-sync live ticks: {self.tick_count} new entries [skip ci]"], check=False)
+                    subprocess.run(["git", "pull", "--rebase", "origin", "main"], check=False)
+                    subprocess.run(["git", "push", "origin", "main"], check=False)
+                    print(f"[GitHub Actions Sync] Pushed {self.tick_count} ticks to repository.")
+            except Exception as e:
+                print(f"[GitHub Actions Sync] Warning: {e}")
+
+def run_collector(duration_seconds=14400, poll_interval=0.5):
     collector = VantageDataCollector()
     print(f"\n[Vantage Collector] Started polling live ticks for {collector.target}")
     print(f"[Vantage Collector] Target CSV: {collector.output_file}")
     print(f"[Vantage Collector] Poll Interval: {poll_interval}s | Max duration: {duration_seconds}s\n")
 
     start_time = time.time()
-    last_report = time.time()
+    last_sync = time.time()
 
     # Pre-seed with historical data
     init_klines = collector.fetch_latest(size=50)
     if init_klines:
-        print(f"[Vantage Collector] Successfully seeded {len(init_klines)} historical candles.")
+        seeded = 0
         for k in init_klines:
-            collector.log_tick(k["close"], k["timestamp"] * 1000, k.get("volume", 0))
+            if collector.log_tick(k["close"], k["timestamp"] * 1000, k.get("volume", 0)):
+                seeded += 1
         collector.flush()
+        if seeded > 0:
+            print(f"[Vantage Collector] Seeded {seeded} new historical candles.")
 
     while (time.time() - start_time) < duration_seconds:
         try:
@@ -123,17 +160,23 @@ def run_collector(duration_seconds=14400, poll_interval=1.0):
                 if price != collector.last_price or ts_ms != collector.last_ts:
                     collector.last_price = price
                     collector.last_ts = ts_ms
-                    collector.log_tick(price, ts_ms, vol)
-                    dt_now = datetime.fromtimestamp(ts_ms / 1000.0).strftime('%H:%M:%S')
-                    print(f"[TICK SAVED] {dt_now} | Price: {price:.3f} | Vol: {vol} (Total Saved: {collector.tick_count})")
+                    if collector.log_tick(price, ts_ms, vol):
+                        dt_now = datetime.fromtimestamp(ts_ms / 1000.0).strftime('%H:%M:%S')
+                        print(f"[TICK SAVED] {dt_now} | Price: {price:.3f} | Vol: {vol} (Total New: {collector.tick_count})")
+
+            # Periodic git push every 10 minutes in GitHub Actions
+            if time.time() - last_sync >= 600:
+                collector.git_sync()
+                last_sync = time.time()
 
             time.sleep(poll_interval)
         except KeyboardInterrupt:
             break
-        except Exception as e:
+        except Exception:
             time.sleep(poll_interval)
 
     collector.flush()
+    collector.git_sync()
     print(f"\n[Vantage Collector] Finished. Total ticks recorded: {collector.tick_count}")
 
 if __name__ == "__main__":
